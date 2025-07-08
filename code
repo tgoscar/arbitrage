@@ -1,0 +1,67 @@
+import pandas as pd
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+
+df = pd.read_csv(
+    r'C:\Users\........\eur_crosses_per_minute3.csv',
+    parse_dates=['Datetime'])
+
+divisas = ['EUR', 'USD', 'CHF']
+pares_directos = [('EUR','USD'), ('USD','CHF'), ('CHF','EUR')]
+umbral = 2e-3  # 0.01%
+
+def get_rate(row, src, dst, typ):
+    direct = f"{src}{dst}_{typ}"
+    inv = f"{dst}{src}_{typ}"
+    if direct in row:
+        return row[direct]
+    if inv in row:
+        if typ == 'BID':
+            return 1/row[f'{dst}{src}_ASK']
+        if typ == 'ASK':
+            return 1/row[f'{dst}{src}_BID']
+    raise KeyError
+
+def build_A(row):
+    n = len(divisas); A = np.full((n,n), -np.inf)
+    np.fill_diagonal(A, 0)
+    idx = {c:i for i,c in enumerate(divisas)}
+    for src, dst in pares_directos:
+        bid = get_rate(row, src, dst, 'BID')
+        ask = get_rate(row, src, dst, 'ASK')
+        i,j = idx[src], idx[dst]
+        A[i,j] = math.log(bid)
+        A[j,i] = math.log(1/ask)
+    return A
+
+def detect_gain(A):
+    M = A.copy()
+    M = np.max(M[:,:,None] + A[None,:,:], axis=1)
+    gains = np.exp(np.diag(M)) - 1
+    mx = gains.max()
+    idx = gains.argmax()
+    return mx, divisas[idx]
+
+res=[]
+for _,r in df.iterrows():
+    A = build_A(r)
+    gain,_ = detect_gain(A)
+    if gain >= umbral:
+        res.append((r.Datetime, gain))
+res = pd.DataFrame(res, columns=['Datetime','gain'])
+res['hour']=res['Datetime'].dt.hour
+res['gain_pct']=res['gain']*100
+
+# Estadísticas generales
+print(f"Total oportunidades ≥{umbral*100}%: {len(res)} ({round(len(res)/30962*100,2)}% de los datos)")
+print("Mediana:", res['gain_pct'].median())
+print("Percentil 90:", np.percentile(res['gain_pct'],90))
+
+# Histograma por hora
+res.groupby('hour').size().plot(kind='bar', figsize=(8,4))
+plt.title('Oportunidades por hora del día')
+plt.xlabel('Hora UTC'); plt.ylabel('Cantidad oportunidades')
+plt.tight_layout()
+plt.savefig('oportunidades_por_hora.png')
+plt.show()
